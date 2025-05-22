@@ -1,0 +1,14 @@
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore credentials and state files
+credentials.json
+last_export_state.json
+
+# Ignore CSV output files
+*.csv
+
+# Ignore environment files
+.env
