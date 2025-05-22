@@ -30,8 +30,19 @@ import argparse
 import requests
 import base64
 import secrets
+import logging
 from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta
+
+# Configure logging for better debugging and security monitoring
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bitunix_to_tradezella.log"),
+        logging.StreamHandler()
+    ]
+)
 
 # Constants
 API_URL = "https://fapi.bitunix.com/api/v1/futures/trade/get_history_trades"
@@ -45,13 +56,16 @@ FIELDNAMES = [
 def load_credentials():
     """Load API credentials from credentials.json"""
     if not os.path.exists(CREDENTIALS_FILE):
+        logging.error(f"Credentials file '{CREDENTIALS_FILE}' not found.")
         raise FileNotFoundError(f"Credentials file '{CREDENTIALS_FILE}' not found.")
     with open(CREDENTIALS_FILE, 'r') as f:
         cfg = json.load(f)
     api_key = cfg.get('api_key')
     secret_key = cfg.get('secret_key')
     if not api_key or not secret_key:
+        logging.error("Both 'api_key' and 'secret_key' must be set in credentials.json.")
         raise KeyError("Both 'api_key' and 'secret_key' must be set in credentials.json.")
+    logging.info("Credentials loaded successfully.")
     return api_key, secret_key
 
 
@@ -100,7 +114,7 @@ class BitunixClient:
 
         while True:
             now_ms = str(int(time.time() * 1000))
-            nonce = "hhzzdfa76673gffH"
+            nonce = secrets.token_hex(8)
             # Prepare query parameter
             params = {'startTime': start_time, 'skip': skip, 'limit': limit}
             signature = self.sign_request(nonce, now_ms, query_params=params)
@@ -113,12 +127,12 @@ class BitunixClient:
                 'Content-Type': 'application/json'
             }
 
-            resp = self.session.get(f"{self.BASE_URL}/api/v1/futures/trade/get_history_trades", headers=headers, params=params)
             try:
+                resp = self.session.get(f"{self.BASE_URL}/api/v1/futures/trade/get_history_trades", headers=headers, params=params)
                 resp.raise_for_status()
                 response_json = resp.json()
                 if 'error' in response_json:
-                    print(f"API Error: {response_json.get('error', 'Unknown error')}")
+                    logging.error(f"API Error: {response_json.get('error', 'Unknown error')}")
                     break
 
                 page = response_json.get('data', {}).get('tradeList', [])
@@ -132,16 +146,16 @@ class BitunixClient:
                 if len(page) < limit:
                     break
             except requests.exceptions.HTTPError as e:
-                print(f"HTTP error occurred: {e}")
-                print(f"Response content: {resp.text}")
+                logging.error(f"HTTP error occurred: {e}")
+                logging.error(f"Response content: {resp.text}")
                 break
             except ValueError:
-                print(f"Invalid JSON response: {resp.text}")
+                logging.error(f"Invalid JSON response: {resp.text}")
                 break
             except Exception as e:
-                print(f"An unexpected error occurred: {e}")
-                print(f"Response content: {resp.text}")
+                logging.error(f"An unexpected error occurred: {e}")
                 break
+        logging.info(f"Fetched {len(trades)} trades.")
         return trades
 
 
@@ -162,14 +176,14 @@ def load_state() -> int:
                     # Parse ISO 8601 format to Unix timestamp in milliseconds
                     dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                     start_time_ms = int(dt.timestamp() * 1000)
-                    print(f"No state file found. Using start_time from config: {start_time_ms}")
+                    logging.info(f"No state file found. Using start_time from config: {start_time_ms}")
                     return start_time_ms
                 except ValueError:
-                    print(f"Invalid start_time format in config: {start_time}")
+                    logging.error(f"Invalid start_time format in config: {start_time}")
                     raise
 
     # Default to epoch start if no config or state file
-    print("No state file or config start_time found. Defaulting to epoch start.")
+    logging.info("No state file or config start_time found. Defaulting to epoch start.")
     return 0
 
 
@@ -218,29 +232,32 @@ def main():
     )
     args = parser.parse_args()
 
-    api_key, secret_key = load_credentials()
-    client = BitunixClient(api_key, secret_key)
+    try:
+        api_key, secret_key = load_credentials()
+        client = BitunixClient(api_key, secret_key)
 
-    last_time = load_state()
-    new_trades = client.fetch_trades(last_time)
-    if not new_trades:
-        print("No new trades since last export.")
-        return
+        last_time = load_state()
+        new_trades = client.fetch_trades(last_time)
+        if not new_trades:
+            logging.info("No new trades since last export.")
+            return
 
-    rows = transform_trades(new_trades)
+        rows = transform_trades(new_trades)
 
-    # Generate a default filename with a timestamp if not provided
-    output_filename = args.output or f"new_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        # Generate a default filename with a timestamp if not provided
+        output_filename = args.output or f"new_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-    import csv
-    with open(output_filename, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        writer.writerows(rows)
+        import csv
+        with open(output_filename, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+            writer.writeheader()
+            writer.writerows(rows)
 
-    latest_time = max(int(t['ctime']) for t in new_trades)
-    save_state(latest_time)
-    print(f"Exported {len(new_trades)} new trades to {output_filename}")
+        latest_time = max(int(t['ctime']) for t in new_trades)
+        save_state(latest_time)
+        logging.info(f"Exported {len(new_trades)} new trades to {output_filename}")
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
 
 if __name__ == '__main__':
     main()

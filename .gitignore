@@ -9,6 +9,7 @@ last_export_state.json
 
 # Ignore CSV output files
 *.csv
+*.log
 
 # Ignore environment files
 .env
